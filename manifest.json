@@ -1,0 +1,14 @@
+{
+  "name": "store",
+  "short_name": "store",
+  "description": "Browse, install, and uninstall Solid apps on your pod — aggregates every curated bundle from solid-apps/bundles",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#7c4dff",
+  "theme_color": "#7c4dff",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
