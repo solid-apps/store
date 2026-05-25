@@ -127,6 +127,25 @@ async function installToPod(a) {
   return ok
 }
 
+// Recursively delete a container and its members (uninstall).
+async function deleteRecursive(url) {
+  try {
+    const r = await authFetch(url, { headers: { Accept: 'application/ld+json' } })
+    if (r.ok) {
+      const doc = await r.json()
+      let c = doc['ldp:contains'] || doc['http://www.w3.org/ns/ldp#contains'] || doc.contains || []
+      c = Array.isArray(c) ? c : [c]
+      for (const item of c) {
+        const child = typeof item === 'string' ? item : item['@id'] || item.id
+        if (!child) continue
+        const abs = new URL(child, url).href
+        await (abs.endsWith('/') ? deleteRecursive(abs) : authFetch(abs, { method: 'DELETE' }))
+      }
+    }
+  } catch { /* best effort */ }
+  await authFetch(url, { method: 'DELETE' })
+}
+
 async function fetchBundle(bundleName) {
   try {
     const r = await fetch(`${BUNDLE_BASE}/${bundleName}.jsonld`)
@@ -347,6 +366,10 @@ async function render() {
       color: rgba(255,255,255,0.85);
     }
     .s-btn.secondary:hover { background: rgba(255,255,255,0.14); color: #fff; }
+    .s-btn.danger {
+      background: rgba(255,255,255,0.08); color: rgba(255,170,170,0.9);
+    }
+    .s-btn.danger:hover { background: rgba(192,57,43,0.85); color: #fff; }
 
     .s-empty {
       text-align: center; padding: 60px 24px;
@@ -446,20 +469,7 @@ async function render() {
         </div>
       </div>
     `
-    const foot = card.querySelector('.s-foot')
-    if (isInstalled) {
-      const open = document.createElement('a')
-      open.className = 's-btn secondary'
-      open.href = `/public/apps/${a.name}/`
-      open.textContent = 'Open'
-      foot.appendChild(open)
-    } else {
-      const install = document.createElement('button')
-      install.className = 's-btn'
-      install.textContent = 'Install'
-      install.addEventListener('click', () => onInstall(a, card, install))
-      foot.appendChild(install)
-    }
+    renderFoot(card, a)
     grid.appendChild(card)
   }
   wrap.appendChild(grid)
@@ -483,6 +493,35 @@ async function render() {
     toastTimer = setTimeout(() => toast.classList.remove('show'), 4500)
   }
 
+  // (Re)build a card's footer for its current installed state. Called on first
+  // render and after install/uninstall so the card reflects reality.
+  function renderFoot(card, a) {
+    const isInstalled = installed.has(a.name)
+    card.dataset.installed = isInstalled ? '1' : '0'
+    const foot = card.querySelector('.s-foot')
+    const pills = foot.querySelector('.s-pills')
+    const pill = pills.querySelector('.installed')
+    if (isInstalled && !pill) pills.insertAdjacentHTML('afterbegin', '<span class="s-pill installed">✓ Installed</span>')
+    if (!isInstalled && pill) pill.remove()
+    foot.querySelectorAll('.s-btn').forEach((b) => b.remove())
+    if (isInstalled) {
+      const open = document.createElement('a')
+      open.className = 's-btn secondary'; open.href = `/public/apps/${a.name}/`; open.textContent = 'Open'
+      const update = document.createElement('button')
+      update.className = 's-btn secondary'; update.textContent = 'Update'
+      update.addEventListener('click', () => onUpdate(a, update))
+      const uninstall = document.createElement('button')
+      uninstall.className = 's-btn danger'; uninstall.textContent = 'Uninstall'
+      uninstall.addEventListener('click', () => onUninstall(a, card, uninstall))
+      foot.append(open, update, uninstall)
+    } else {
+      const install = document.createElement('button')
+      install.className = 's-btn'; install.textContent = 'Install'
+      install.addEventListener('click', () => onInstall(a, card, install))
+      foot.appendChild(install)
+    }
+  }
+
   async function onInstall(a, card, btn) {
     // Signed out → fall back to the copy-the-command path (e.g. a terminal pod).
     if (!loggedIn()) {
@@ -491,27 +530,38 @@ async function render() {
       showToast(ok ? 'Sign in to install here — or paste in your terminal:' : 'Run this in your terminal:', cmd)
       return
     }
-    btn.disabled = true
-    const label = btn.textContent
-    btn.textContent = 'Installing…'
+    btn.disabled = true; btn.textContent = 'Installing…'
     try {
       const n = await installToPod(a)
       installed.add(a.name)
-      card.dataset.installed = '1'
-      const pills = card.querySelector('.s-pills')
-      if (pills && !pills.querySelector('.installed')) {
-        pills.insertAdjacentHTML('afterbegin', '<span class="s-pill installed">✓ Installed</span>')
-      }
-      const open = document.createElement('a')
-      open.className = 's-btn secondary'
-      open.href = `/public/apps/${a.name}/`
-      open.textContent = 'Open'
-      btn.replaceWith(open)
+      renderFoot(card, a)
       showToast(`Installed ${a.label} (${n} files) — open it from home.`)
     } catch (e) {
-      btn.disabled = false
-      btn.textContent = label
+      btn.disabled = false; btn.textContent = 'Install'
       showToast('Install failed: ' + (e.message || e))
+    }
+  }
+
+  async function onUpdate(a, btn) {
+    if (!loggedIn()) { showToast('Sign in to update.'); return }
+    btn.disabled = true; const label = btn.textContent; btn.textContent = 'Updating…'
+    try { const n = await installToPod(a); showToast(`Updated ${a.label} (${n} files).`) }
+    catch (e) { showToast('Update failed: ' + (e.message || e)) }
+    finally { btn.disabled = false; btn.textContent = label }
+  }
+
+  async function onUninstall(a, card, btn) {
+    if (!loggedIn()) { showToast('Sign in to uninstall.'); return }
+    if (!confirm(`Uninstall ${a.label}? (A curated app may reappear on the next launch.)`)) return
+    btn.disabled = true; btn.textContent = 'Removing…'
+    try {
+      await deleteRecursive(new URL(`../${a.name}/`, location.href).href)
+      installed.delete(a.name)
+      renderFoot(card, a)
+      showToast(`Uninstalled ${a.label}.`)
+    } catch (e) {
+      btn.disabled = false; btn.textContent = 'Uninstall'
+      showToast('Uninstall failed: ' + (e.message || e))
     }
   }
 
