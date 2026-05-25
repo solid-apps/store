@@ -74,6 +74,59 @@ function parseSpec(input) {
   return { name, spec: input }
 }
 
+// --- one-click install (write the app's files onto the pod) -----------------
+const MIME = {
+  html: 'text/html', js: 'application/javascript', mjs: 'application/javascript', css: 'text/css',
+  json: 'application/json', jsonld: 'application/ld+json', svg: 'image/svg+xml', png: 'image/png',
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', ico: 'image/x-icon',
+  txt: 'text/plain', md: 'text/markdown', woff2: 'font/woff2', woff: 'font/woff',
+  m3u: 'audio/x-mpegurl', map: 'application/json'
+}
+const mimeOf = (p) => MIME[p.split('.').pop().toLowerCase()] || 'application/octet-stream'
+const authFetch = (url, opts) => ((window.xlogin && window.xlogin.authFetch) || fetch)(url, opts)
+const loggedIn = () => !!(window.xlogin && window.xlogin.id)
+const servable = (p) => !p.split('/').some((s) => s.startsWith('.'))  // skip dot-resources (JSS 403s PUT)
+
+// Resolve an app spec to its source repo. `name` → solid-apps/<name>@gh-pages;
+// `org/repo` and trailing `#branch` honored; bare GitHub URLs parsed.
+function resolveSource(spec) {
+  let s = spec
+  const eq = s.lastIndexOf('='); if (eq > 0) s = s.slice(0, eq)
+  let branch = 'gh-pages'
+  const h = s.lastIndexOf('#'); if (h > 0) { branch = s.slice(h + 1) || branch; s = s.slice(0, h) }
+  if (/^https?:\/\//.test(s)) {
+    const m = s.match(/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/)
+    return m ? { org: m[1], repo: m[2], branch } : null
+  }
+  if (s.includes('/')) { const [org, ...rest] = s.split('/'); return { org, repo: rest.join('/'), branch } }
+  return { org: 'solid-apps', repo: s, branch }
+}
+
+async function listSourceFiles({ org, repo, branch }) {
+  const r = await fetch(`https://api.github.com/repos/${org}/${repo}/git/trees/${branch}?recursive=1`)
+  if (!r.ok) throw new Error(`source listing failed (${r.status})`)
+  return ((await r.json()).tree || []).filter((t) => t.type === 'blob').map((t) => t.path).filter(servable)
+}
+
+// Install `a` onto the pod at /public/apps/<a.name>/. raw.githubusercontent
+// is the source (always current); files are PUT with authFetch. Returns count.
+async function installToPod(a) {
+  const src = resolveSource(a.spec)
+  if (!src) throw new Error("can't auto-install this source")
+  const files = await listSourceFiles(src)
+  let ok = 0
+  for (const f of files) {
+    const res = await fetch(`https://raw.githubusercontent.com/${src.org}/${src.repo}/${src.branch}/${f}`)
+    if (!res.ok) continue
+    const put = await authFetch(new URL(`../${a.name}/${f}`, location.href), {
+      method: 'PUT', headers: { 'Content-Type': mimeOf(f) }, body: await res.arrayBuffer()
+    })
+    if (put.ok) ok++
+  }
+  if (!ok) throw new Error('nothing installed')
+  return ok
+}
+
 async function fetchBundle(bundleName) {
   try {
     const r = await fetch(`${BUNDLE_BASE}/${bundleName}.jsonld`)
@@ -404,7 +457,7 @@ async function render() {
       const install = document.createElement('button')
       install.className = 's-btn'
       install.textContent = 'Install'
-      install.addEventListener('click', () => onInstall(a))
+      install.addEventListener('click', () => onInstall(a, card, install))
       foot.appendChild(install)
     }
     grid.appendChild(card)
@@ -430,11 +483,36 @@ async function render() {
     toastTimer = setTimeout(() => toast.classList.remove('show'), 4500)
   }
 
-  async function onInstall(a) {
-    const cmd = `jspod install ${a.spec}`
-    const ok = await copy(cmd)
-    if (ok) showToast('Copied — paste in your terminal:', cmd)
-    else showToast('Run this in your terminal:', cmd)
+  async function onInstall(a, card, btn) {
+    // Signed out → fall back to the copy-the-command path (e.g. a terminal pod).
+    if (!loggedIn()) {
+      const cmd = `jspod install ${a.spec}`
+      const ok = await copy(cmd)
+      showToast(ok ? 'Sign in to install here — or paste in your terminal:' : 'Run this in your terminal:', cmd)
+      return
+    }
+    btn.disabled = true
+    const label = btn.textContent
+    btn.textContent = 'Installing…'
+    try {
+      const n = await installToPod(a)
+      installed.add(a.name)
+      card.dataset.installed = '1'
+      const pills = card.querySelector('.s-pills')
+      if (pills && !pills.querySelector('.installed')) {
+        pills.insertAdjacentHTML('afterbegin', '<span class="s-pill installed">✓ Installed</span>')
+      }
+      const open = document.createElement('a')
+      open.className = 's-btn secondary'
+      open.href = `/public/apps/${a.name}/`
+      open.textContent = 'Open'
+      btn.replaceWith(open)
+      showToast(`Installed ${a.label} (${n} files) — open it from home.`)
+    } catch (e) {
+      btn.disabled = false
+      btn.textContent = label
+      showToast('Install failed: ' + (e.message || e))
+    }
   }
 
   // Filter logic

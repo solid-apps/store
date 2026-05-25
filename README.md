@@ -14,19 +14,19 @@ Served from your pod at `/public/apps/store/` once installed.
 
 - **All apps in one place** — `default`, `starter`, `jspod`, `all`, `media`, `productivity`, `agentic`, `teams` bundles, deduped.
 - **Live install status** — reads `/public/apps/` from the pod it's served from. Installed apps show ✓ Installed.
-- **One-click install** — copies `jspod install <spec>` to your clipboard. Paste in your terminal, the app lands on your pod, refresh the store and home picks it up.
+- **One-click install** — when signed in (login pill), the app's files are fetched from `raw.githubusercontent` and `PUT` straight onto your pod under `/public/apps/<name>/`; the card flips to ✓ Installed and home picks it up. Signed out, it falls back to copying the `jspod install <spec>` command for a terminal pod.
 - **Search + filter** — All / Installed / Available, plus full-text search across names + descriptions.
 - **PWA** — install to home screen, theme color matches the suite.
 
-## Why "copy command" instead of one-click install?
+## How install works
 
-A browser-based app can't `git push` to the pod's `/public/apps/<name>/` without help — that's a developer-machine operation. There are three options for one-click:
-
-1. JSS adds an `/api/install` endpoint (the right long-term answer, real engineering)
-2. A sidecar Node service runs `jspod install` on request (works without JSS changes; new long-running service)
-3. Browser-side git via `isomorphic-git` (heavy, fragile)
-
-For v1, copy-to-clipboard is honest about the model and ships today. v2 will wire JSS's install endpoint when it lands.
+No server-side endpoint needed: the browser resolves the app spec to its source
+repo (`name` → `solid-apps/<name>@gh-pages`; `org/repo` and `#branch` honored),
+lists the files via the GitHub trees API, fetches each from
+`raw.githubusercontent` (always the current commit), and `PUT`s them to
+`/public/apps/<name>/` with `window.xlogin.authFetch`. Dot-prefixed resources
+(e.g. `.gitignore`) are skipped — JSS reserves them. Same path the `settings`
+app uses to update apps.
 
 ## How it builds the catalogue
 
